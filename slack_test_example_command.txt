@@ -1,4 +1,4 @@
-.bin/turnutils_uclient -p 22466 -e 127.0.0.1 -r 9100 -u 1523794526:U06108DT3 -w 7k5r9Dd1pox5BaNXX8OsKl62i7k= -Q "GET / HTTP/1.1
+./bin/turnutils_uclient -p 22466 -e 127.0.0.1 -r 9100 -u 1523794526:U06108DT3 -w 7k5r9Dd1pox5BaNXX8OsKl62i7k= -Q "GET / HTTP/1.1
 Host: 127.0.0.1
 
 " 54.175.18.51
