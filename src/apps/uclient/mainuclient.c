@@ -99,6 +99,9 @@ int dual_allocation = 0;
 int oauth = 0;
 oauth_key okey_array[3];
 
+int slack_test = 0;
+char slack_test_message[65536] = "\0";
+
 static oauth_key_data_raw okdr_array[3] = {
 		{"north","MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEK",0,0,"A256GCM","crinna.org"},
 		{"union","MTIzNDU2Nzg5MDEyMzQ1Ngo=",0,0,"A128GCM","north.gov"},
@@ -156,7 +159,8 @@ static char Usage[] =
   "	-C	TURN REST API timestamp/username separator symbol (character). The default value is ':'.\n"
   "	-F	<cipher-suite> Cipher suite for TLS/DTLS. Default value is DEFAULT.\n"
   "	-o	<origin> - the ORIGIN STUN attribute value.\n"
-  "	-a	<bytes-per-second> Bandwidth for the bandwidth request in ALLOCATE. The default value is zero.\n";
+  "	-a	<bytes-per-second> Bandwidth for the bandwidth request in ALLOCATE. The default value is zero.\n"
+  "	-Q	Message to send as part of Slack test. Assumes -T flag.\n";
 
 //////////////////////////////////////////////////
 
@@ -181,7 +185,7 @@ int main(int argc, char **argv)
 
 	ns_bzero(local_addr, sizeof(local_addr));
 
-	while ((c = getopt(argc, argv, "a:d:p:l:n:L:m:e:r:u:w:i:k:z:W:C:E:F:o:bZvsyhcxXgtTSAPDNOUMRIGBJ")) != -1) {
+	while ((c = getopt(argc, argv, "a:d:p:l:n:L:m:e:r:u:w:i:k:z:W:C:E:F:o:Q:bZvsyhcxXgtTSAPDNOUMRIGBJ")) != -1) {
 		switch (c){
 		case 'J': {
 
@@ -331,6 +335,11 @@ int main(int argc, char **argv)
 		case 'T':
 			relay_transport = STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE;
 			break;
+		case 'Q':
+			relay_transport = STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE;
+			slack_test = 1;
+			strncpy(slack_test_message, optarg, sizeof(slack_test_message));
+			break;
 		case 'U':
 		  use_null_cipher = 1;
 		  /* implies 'S' */
@@ -424,7 +433,7 @@ int main(int argc, char **argv)
 	if(is_TCP_relay()) {
 		dont_fragment = 0;
 		no_rtcp = 1;
-		c2c = 1;
+		if (!slack_test) c2c = 1;
 		use_tcp = 1;
 		do_not_use_channel = 1;
 	}

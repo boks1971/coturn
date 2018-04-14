@@ -89,6 +89,9 @@ extern char origin[STUN_MAX_ORIGIN_SIZE+1];
 extern int oauth;
 extern oauth_key okey_array[3];
 
+extern int slack_test;
+extern char slack_test_message[65536];
+
 #define UCLIENT_SESSION_LIFETIME (777)
 #define OAUTH_SESSION_LIFETIME (555)
 

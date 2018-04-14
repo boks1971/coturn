@@ -563,11 +563,13 @@ int recv_buffer(app_ur_conn_info *clnet_info, stun_buffer* message, int sync, in
 				mlen = stun_get_message_len_str(message->buf, rc, 1,
 						&app_msg_len);
 			} else {
-				if (!sync)
-					mlen = clmessage_length;
+				if (!slack_test) {
+					if (!sync)
+						mlen = clmessage_length;
 
-				if (mlen > clmessage_length)
-					mlen = clmessage_length;
+					if (mlen > clmessage_length)
+						mlen = clmessage_length;
+				}
 
 				app_msg_len = (size_t) mlen;
 			}
@@ -661,6 +663,9 @@ static int client_read(app_ur_session *elem, int is_tcp_data, app_tcp_conn_info 
 	}
 
 	if (rc > 0) {
+		if (slack_test) {
+			TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "SLACK received message:\n%s\n", elem->in_buffer.buf);
+		}
 
 		elem->in_buffer.len = rc;
 
@@ -900,7 +905,7 @@ static int client_write(app_ur_session *elem) {
   }
 
   if (elem->out_buffer.len > 0) {
-    
+
     if (clnet_verbose && verbose_packets) {
 		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "before write ...\n");
     }
@@ -918,6 +923,71 @@ static int client_write(app_ur_session *elem) {
       tot_send_bytes += clmessage_length;
     } else {
     	return -1;
+    }
+  }
+
+  return 0;
+}
+
+static int client_write_message(app_ur_session *elem, char *message) {
+
+  if(!elem) return -1;
+
+  if(elem->state!=UR_STATE_READY) return -1;
+
+  elem->ctime=current_time;
+
+  app_tcp_conn_info *atc=NULL;
+
+  if (is_TCP_relay()) {
+
+	  memcpy(elem->out_buffer.buf, message, strlen(message));
+	  elem->out_buffer.len = strlen(message);
+
+	  if(elem->pinfo.is_peer) {
+		  send(elem->pinfo.fd, elem->out_buffer.buf, elem->out_buffer.len, 0);
+		  return 0;
+	  }
+
+	if (!(elem->pinfo.tcp_conn) || !(elem->pinfo.tcp_conn_number)) {
+		return -1;
+	}
+	int i = (unsigned int)(random()) % elem->pinfo.tcp_conn_number;
+	atc = elem->pinfo.tcp_conn[i];
+	if(!atc->tcp_data_bound) {
+		printf("%s: Uninitialized atc: i=%d, atc=0x%lx\n",__FUNCTION__,i,(long)atc);
+		return -1;
+	}
+  } else if(!do_not_use_channel) {
+	  /* Let's always do padding: */
+    stun_init_channel_message(elem->chnum, &(elem->out_buffer), clmessage_length, mandatory_channel_padding || use_tcp);
+    memcpy(elem->out_buffer.buf+4,buffer_to_send,clmessage_length);
+  } else {
+    stun_init_indication(STUN_METHOD_SEND, &(elem->out_buffer));
+    stun_attr_add(&(elem->out_buffer), STUN_ATTRIBUTE_DATA, buffer_to_send, clmessage_length);
+    stun_attr_add_addr(&(elem->out_buffer),STUN_ATTRIBUTE_XOR_PEER_ADDRESS, &(elem->pinfo.peer_addr));
+    if(dont_fragment)
+	    stun_attr_add(&(elem->out_buffer), STUN_ATTRIBUTE_DONT_FRAGMENT, NULL, 0);
+
+    if(use_fingerprints)
+	    stun_attr_add_fingerprint_str(elem->out_buffer.buf,(size_t*)&(elem->out_buffer.len));
+  }
+
+  if (elem->out_buffer.len > 0) {
+
+    if (clnet_verbose && verbose_packets) {
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "before write ...\n");
+    }
+
+    int rc=send_buffer(&(elem->pinfo),&(elem->out_buffer),1,atc);
+
+    if(rc >= 0) {
+      TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "SLACK sent message:\n%s\n", elem->out_buffer.buf);
+      if (clnet_verbose && verbose_packets) {
+				TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "wrote %d bytes\n", (int) rc);
+	  }
+    } else {
+	return -1;
     }
   }
 
@@ -1447,7 +1517,6 @@ void start_mclient(const char *remote_address, int port,
 	evtimer_add(ev,&tv);
 
 	for(i=0;i<total_clients;i++) {
-
 		if(is_TCP_relay()) {
 			if(passive_tcp) {
 				if(elems[i]->pinfo.is_peer) {
@@ -1455,9 +1524,15 @@ void start_mclient(const char *remote_address, int port,
 					socket_connect(elems[i]->pinfo.fd, &(elems[i]->pinfo.remote_addr), &connect_err);
 				}
 			} else {
-				int j = 0;
-				for(j=i+1;j<total_clients;j++) {
-					if (turn_tcp_connect(clnet_verbose, &(elems[i]->pinfo), &(elems[j]->pinfo.relay_addr)) < 0) {
+				if (c2c) {
+					int j = 0;
+					for(j=i+1;j<total_clients;j++) {
+						if (turn_tcp_connect(clnet_verbose, &(elems[i]->pinfo), &(elems[j]->pinfo.relay_addr)) < 0) {
+							exit(-1);
+						}
+					}
+				} else {
+					if (turn_tcp_connect(clnet_verbose, &(elems[i]->pinfo), &peer_addr) < 0) {
 						exit(-1);
 					}
 				}
@@ -1521,61 +1596,78 @@ void start_mclient(const char *remote_address, int port,
 
 	tot_messages = elems[0]->tot_msgnum * total_clients;
 
-	start_full_timer = 1;
+	if (!slack_test) {
+		start_full_timer = 1;
 
-	while (1) {
+		while (1) {
 
-		run_events(1);
+			run_events(1);
 
-		int msz = (int)current_clients_number;
-		if (msz < 1) {
-			break;
+			int msz = (int)current_clients_number;
+			if (msz < 1) {
+				break;
+			}
+
+			if(show_statistics) {
+				TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
+					"%s: msz=%d, tot_send_msgs=%lu, tot_recv_msgs=%lu, tot_send_bytes ~ %llu, tot_recv_bytes ~ %llu\n",
+					__FUNCTION__, msz, (unsigned long) tot_send_messages,
+					(unsigned long) tot_recv_messages,
+					(unsigned long long) tot_send_bytes,
+					(unsigned long long) tot_recv_bytes);
+				show_statistics=0;
+			}
 		}
+	} else {
+		int client_write_done = 0;
+		while (1) {
+			run_events(1);
 
-		if(show_statistics) {
-			TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
-				      "%s: msz=%d, tot_send_msgs=%lu, tot_recv_msgs=%lu, tot_send_bytes ~ %llu, tot_recv_bytes ~ %llu\n",
-				      __FUNCTION__, msz, (unsigned long) tot_send_messages,
-				      (unsigned long) tot_recv_messages, 
-				      (unsigned long long) tot_send_bytes,
-				      (unsigned long long) tot_recv_bytes);
-			show_statistics=0;
+			if (client_write_done == 0) {
+				if (client_write_message(elems[0], slack_test_message) >= 0) {
+					client_write_done = 1;
+				}
+			}
 		}
 	}
 
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
-		      "%s: tot_send_msgs=%lu, tot_recv_msgs=%lu\n",
-		      __FUNCTION__,
-		      (unsigned long) tot_send_messages,
-		      (unsigned long) tot_recv_messages);
+	if (!slack_test) {
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
+			"%s: tot_send_msgs=%lu, tot_recv_msgs=%lu\n",
+			__FUNCTION__,
+			(unsigned long) tot_send_messages,
+			(unsigned long) tot_recv_messages);
 
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
-		      "%s: tot_send_bytes ~ %lu, tot_recv_bytes ~ %lu\n",
-		      __FUNCTION__,
-		      (unsigned long) tot_send_bytes,
-		      (unsigned long) tot_recv_bytes);
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO,
+			"%s: tot_send_bytes ~ %lu, tot_recv_bytes ~ %lu\n",
+			__FUNCTION__,
+			(unsigned long) tot_send_bytes,
+			(unsigned long) tot_recv_bytes);
+	}
 
 	if (client_event_base)
 		event_base_free(client_event_base);
 
-	if(tot_send_messages<tot_recv_messages)
-		tot_recv_messages=tot_send_messages;
+	if (!slack_test) {
+		if(tot_send_messages<tot_recv_messages)
+			tot_recv_messages=tot_send_messages;
 
-	total_loss = tot_send_messages-tot_recv_messages;
+		total_loss = tot_send_messages-tot_recv_messages;
 
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Total transmit time is %u\n",
-			((unsigned int)(current_time - stime)));
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Total lost packets %llu (%f%c), total send dropped %llu (%f%c)\n",
-				(unsigned long long)total_loss, (((double)total_loss/(double)tot_send_messages)*100.00),'%',
-				(unsigned long long)tot_send_dropped, (((double)tot_send_dropped/(double)(tot_send_messages+tot_send_dropped))*100.00),'%');
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Average round trip delay %f ms; min = %lu ms, max = %lu ms\n",
-				((double)total_latency/(double)((tot_recv_messages<1) ? 1 : tot_recv_messages)),
-				(unsigned long)min_latency,
-				(unsigned long)max_latency);
-	TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Average jitter %f ms; min = %lu ms, max = %lu ms\n",
-				((double)total_jitter/(double)tot_recv_messages),
-				(unsigned long)min_jitter,
-				(unsigned long)max_jitter);
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Total transmit time is %u\n",
+				((unsigned int)(current_time - stime)));
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Total lost packets %llu (%f%c), total send dropped %llu (%f%c)\n",
+					(unsigned long long)total_loss, (((double)total_loss/(double)tot_send_messages)*100.00),'%',
+					(unsigned long long)tot_send_dropped, (((double)tot_send_dropped/(double)(tot_send_messages+tot_send_dropped))*100.00),'%');
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Average round trip delay %f ms; min = %lu ms, max = %lu ms\n",
+					((double)total_latency/(double)((tot_recv_messages<1) ? 1 : tot_recv_messages)),
+					(unsigned long)min_latency,
+					(unsigned long)max_latency);
+		TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Average jitter %f ms; min = %lu ms, max = %lu ms\n",
+					((double)total_jitter/(double)tot_recv_messages),
+					(unsigned long)min_jitter,
+					(unsigned long)max_jitter);
+	}
 
 	turn_free(elems,0);
 }
